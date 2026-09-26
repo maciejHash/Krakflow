@@ -29,13 +29,58 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  String selectedFilter = "wszystkie";
   @override
   Widget build(BuildContext context) {
+    // zmienna pomocnicza przetrzymująca obecnie przefiltrowaną listę
+    List<Task> filteredTasks = TaskRepository.tasks;
+    if (selectedFilter == "wykonane") {
+      filteredTasks = TaskRepository.tasks.where((task) => task.done).toList();
+    } else if (selectedFilter == "do zrobienia") {
+      filteredTasks = TaskRepository.tasks.where((task) => !task.done).toList();
+    }
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title),
         centerTitle: true,
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: [
+          IconButton(
+            icon: Icon(Icons.delete),
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (context) {
+                  return AlertDialog(
+                    title: Text("Potwierdzenie"),
+                    content: Text("Czy na pewno chcesz usunąć wszystkie zadania?"),
+                    actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: Text("Anuluj"),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        setState(() {
+                          TaskRepository.tasks.clear(); // usuwa wszystkie elementy z listy
+                        });
+                        Navigator.pop(context); // zamyka dialog
+
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text("Wszystkie zadania zostały usunięte"),
+                          ),
+                        );
+                      },
+                      child: Text("Usuń"),
+                    ),
+                    ],
+                  );
+                },
+              );
+            },
+          ),
+        ]
       ),
       body: SafeArea(
         child: Padding(
@@ -50,19 +95,35 @@ class _HomeScreenState extends State<HomeScreen> {
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               const SizedBox(height: 12),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'wszystkie', label: Text('Wszystkie')),
+                  ButtonSegment(value: 'wykonane', label: Text('Wykonane')),
+                  ButtonSegment(
+                    value: 'do zrobienia',
+                    label: Text('Do zrobienia'),
+                  ),
+                ],
+                selected: {selectedFilter},
+                onSelectionChanged: (selection) {
+                  setState(() {
+                    selectedFilter = selection.first;
+                  });
+                },
+              ),
+              const SizedBox(height: 12),
               Text(
                 'Dzisiejsze zadania:',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+                style: Theme.of(context).textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
               Expanded(
                 child: ListView.builder(
-                  itemCount: TaskRepository.tasks.length,
+                  itemCount: filteredTasks.length,
                   padding: const EdgeInsets.only(bottom: 16),
                   itemBuilder: (context, index) {
-                    final task = TaskRepository.tasks[index];
+                    final task = filteredTasks[index];
                     return Dismissible(
                       key: ValueKey(task.title),
                       direction: DismissDirection.endToStart,
@@ -82,7 +143,6 @@ class _HomeScreenState extends State<HomeScreen> {
                         deadline: 'Termin: ${task.deadline}',
                         priority: 'Priorytet: ${task.priority}',
                         done: task.done,
-                        icon: task.done ? Icons.check_circle : Icons.circle_outlined,
                         onChanged: (value) {
                           setState(() {
                             task.done = value!;
@@ -98,10 +158,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
                           if (updatedTask != null) {
                             setState(() {
-                            TaskRepository.tasks[index] = updatedTask;
+                              final taskIndex = TaskRepository.tasks.indexOf(
+                                task,
+                              );
+                              TaskRepository.tasks[taskIndex] = updatedTask;
                             });
                           }
-                        }
+                        },
                       ),
                     );
                   },
@@ -115,14 +178,12 @@ class _HomeScreenState extends State<HomeScreen> {
         onPressed: () async {
           final Task? newTask = await Navigator.push(
             context,
-            MaterialPageRoute(
-            builder: (context) => AddTaskScreen(),
-            ),
+            MaterialPageRoute(builder: (context) => AddTaskScreen()),
           );
           if (newTask != null) {
             setState(() {
-            TaskRepository.tasks.add(newTask);
-          });
+              TaskRepository.tasks.add(newTask);
+            });
           }
         },
         child: Icon(Icons.add),
@@ -140,9 +201,7 @@ class AddTaskScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text("Nowe zadanie"),
-      ),
+      appBar: AppBar(title: Text("Nowe zadanie")),
       body: Padding(
         padding: EdgeInsets.all(16),
         child: Column(
@@ -204,9 +263,7 @@ class EditTaskScreen extends StatelessWidget {
     priorityController.text = task.priority;
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text("Edytuj zadanie"),
-      ),
+      appBar: AppBar(title: Text("Edytuj zadanie")),
       body: Padding(
         padding: EdgeInsets.all(16),
         child: Column(
@@ -258,7 +315,6 @@ class TaskCard extends StatelessWidget {
   final String deadline;
   final String priority;
   final bool done;
-  final IconData icon;
   final ValueChanged<bool?>? onChanged;
   final VoidCallback? onTap;
 
@@ -268,7 +324,6 @@ class TaskCard extends StatelessWidget {
     required this.deadline,
     required this.priority,
     required this.done,
-    required this.icon,
     this.onChanged,
     this.onTap,
   });
@@ -282,10 +337,7 @@ class TaskCard extends StatelessWidget {
       color: isDone ? Colors.white : null,
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        leading: Checkbox(
-          value: isDone,
-          onChanged: onChanged,
-        ),
+        leading: Checkbox(value: isDone, onChanged: onChanged),
         title: Text(
           title,
           style: TextStyle(
@@ -311,7 +363,13 @@ class TaskCard extends StatelessWidget {
             Text(
               priority,
               style: TextStyle(
-                color: isDone ? Colors.grey[600] : null,
+                color: isDone
+                    ? Colors.grey[600]
+                    : (priority == "Priorytet: wysoki"
+                          ? Colors.red
+                          : (priority == "Priorytet: średni"
+                                ? Colors.orange
+                                : Colors.green)),
                 decoration: isDone ? TextDecoration.lineThrough : null,
               ),
             ),
