@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-import '../task_repository.dart';
+import '../models/task.dart';
 
 import 'dart:math';
 
@@ -20,6 +20,7 @@ class TaskApiService {
         final priorities = ["niski", "średni", "wysoki"];
         final priority = priorities[random.nextInt(priorities.length)];
         return Task(
+          id: todo["id"],
           title: todo["todo"],
           deadline: deadline,
           done: todo["completed"],

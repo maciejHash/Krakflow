@@ -1,9 +1,17 @@
 import 'package:flutter/material.dart';
 
-import 'task_repository.dart';
-import 'services/task_api_service.dart';
+import 'models/task.dart';
+import 'services/task_local_database.dart';
+import 'services/task_sync_service.dart';
 
-void main() {
+import 'package:hive_ce_flutter/hive_flutter.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  await Hive.initFlutter(); // inicjalizacja Hive
+  await Hive.openBox("tasks"); // otwarcie kontenera
+
   runApp(const MyApp());
 }
 
@@ -49,7 +57,8 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     try {
-      final tasks = await TaskApiService.fetchTasks();
+      await TaskSyncService.loadInitialDataIfNeeded();
+      final tasks = TaskLocalDatabase.getTasks();
       if (!mounted) return;
       setState(() {
         _tasks = tasks;
@@ -84,7 +93,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: () {
               showDialog(
                 context: context,
-                builder: (context) {
+                builder: (dialogContext) {
                   return AlertDialog(
                     title: Text("Potwierdzenie"),
                     content: Text(
@@ -92,15 +101,17 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     actions: [
                       TextButton(
-                        onPressed: () => Navigator.pop(context),
+                        onPressed: () => Navigator.pop(dialogContext),
                         child: Text("Anuluj"),
                       ),
                       TextButton(
-                        onPressed: () {
+                        onPressed: () async {
+                          await TaskLocalDatabase.deleteAllTasks();
+                          if (!mounted || !dialogContext.mounted) return;
                           setState(() {
                             _tasks.clear();
                           });
-                          Navigator.pop(context); // zamyka dialog
+                          Navigator.pop(dialogContext); // zamyka dialog
 
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
@@ -182,10 +193,12 @@ class _HomeScreenState extends State<HomeScreen> {
                           return Dismissible(
                             key: ValueKey(task.title),
                             direction: DismissDirection.endToStart,
-                            onDismissed: (direction) {
+                            onDismissed: (direction) async {
                               setState(() {
                                 _tasks.remove(task);
                               });
+                              await TaskLocalDatabase.deleteTask(task.id);
+                              if (!context.mounted) return;
 
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
@@ -200,10 +213,12 @@ class _HomeScreenState extends State<HomeScreen> {
                               deadline: 'Termin: ${task.deadline}',
                               priority: 'Priorytet: ${task.priority}',
                               done: task.done,
-                              onChanged: (value) {
+                              onChanged: (value) async {
+                                if (value == null) return;
                                 setState(() {
-                                  task.done = value!;
+                                  task.done = value;
                                 });
+                                await TaskLocalDatabase.updateTask(task);
                               },
                               onTap: () async {
                                 final Task? updatedTask = await Navigator.push(
@@ -214,12 +229,15 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                 );
 
-                                if (updatedTask != null) {
-                                  setState(() {
-                                    final taskIndex = _tasks.indexOf(task);
-                                    _tasks[taskIndex] = updatedTask;
-                                  });
+                                if (updatedTask == null || !context.mounted) {
+                                  return;
                                 }
+                                await TaskLocalDatabase.updateTask(updatedTask);
+                                if (!mounted) return;
+                                setState(() {
+                                  final taskIndex = _tasks.indexOf(task);
+                                  _tasks[taskIndex] = updatedTask;
+                                });
                               },
                             ),
                           );
@@ -234,13 +252,23 @@ class _HomeScreenState extends State<HomeScreen> {
         onPressed: () async {
           final Task? newTask = await Navigator.push(
             context,
-            MaterialPageRoute(builder: (context) => AddTaskScreen()),
+            MaterialPageRoute(
+              builder: (context) => AddTaskScreen(
+                id:
+                    _tasks.fold<int>(
+                      0,
+                      (maxId, task) => task.id > maxId ? task.id : maxId,
+                    ) +
+                    1,
+              ),
+            ),
           );
-          if (newTask != null) {
-            setState(() {
-              _tasks.add(newTask);
-            });
-          }
+          if (newTask == null || !mounted) return;
+          await TaskLocalDatabase.addTask(newTask);
+          if (!mounted) return;
+          setState(() {
+            _tasks.add(newTask);
+          });
         },
         child: Icon(Icons.add),
       ),
@@ -249,7 +277,8 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class AddTaskScreen extends StatelessWidget {
-  AddTaskScreen({super.key});
+  AddTaskScreen({super.key, required this.id});
+  final int id;
   final TextEditingController titleController = TextEditingController();
   final TextEditingController deadlineController = TextEditingController();
   final TextEditingController priorityController = TextEditingController();
@@ -287,6 +316,7 @@ class AddTaskScreen extends StatelessWidget {
             ElevatedButton(
               onPressed: () {
                 final newTask = Task(
+                  id: id,
                   title: titleController.text,
                   deadline: deadlineController.text,
                   priority: priorityController.text,
@@ -349,6 +379,7 @@ class EditTaskScreen extends StatelessWidget {
             ElevatedButton(
               onPressed: () {
                 final updatedTask = Task(
+                  id: task.id,
                   title: titleController.text,
                   deadline: deadlineController.text,
                   priority: priorityController.text,
