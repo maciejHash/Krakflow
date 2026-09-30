@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 
 import 'models/task.dart';
@@ -6,11 +8,39 @@ import 'services/task_sync_service.dart';
 
 import 'package:hive_ce_flutter/hive_flutter.dart';
 
+import 'package:firebase_core/firebase_core.dart';
+
+import 'firebase_options.dart';
+
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+
+import 'services/analytics_service.dart';
+
+Future<void> _recordCrash(
+  Object error,
+  StackTrace stackTrace, {
+  String? reason,
+}) async {
+  await FirebaseCrashlytics.instance.recordError(
+    error,
+    stackTrace,
+    reason: reason,
+  );
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Hive.initFlutter(); // inicjalizacja Hive
   await Hive.openBox("tasks"); // otwarcie kontenera
+
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+  PlatformDispatcher.instance.onError = (error, stackTrace) {
+    FirebaseCrashlytics.instance.recordError(error, stackTrace, fatal: true);
+    return true;
+  };
 
   runApp(const MyApp());
 }
@@ -64,7 +94,8 @@ class _HomeScreenState extends State<HomeScreen> {
         _tasks = tasks;
         _isLoading = false;
       });
-    } catch (error) {
+    } catch (error, stackTrace) {
+      await _recordCrash(error, stackTrace, reason: 'Failed to load tasks');
       if (!mounted) return;
       setState(() {
         _loadError = error.toString();
@@ -106,20 +137,28 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       TextButton(
                         onPressed: () async {
-                          await TaskLocalDatabase.deleteAllTasks();
-                          if (!mounted || !dialogContext.mounted) return;
-                          setState(() {
-                            _tasks.clear();
-                          });
-                          Navigator.pop(dialogContext); // zamyka dialog
+                          try {
+                            await TaskLocalDatabase.deleteAllTasks();
+                            if (!mounted || !dialogContext.mounted) return;
+                            setState(() {
+                              _tasks.clear();
+                            });
+                            Navigator.pop(dialogContext); // zamyka dialog
 
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                "Wszystkie zadania zostały usunięte",
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  "Wszystkie zadania zostały usunięte",
+                                ),
                               ),
-                            ),
-                          );
+                            );
+                          } catch (error, stackTrace) {
+                            await _recordCrash(
+                              error,
+                              stackTrace,
+                              reason: 'Failed to delete all tasks',
+                            );
+                          }
                         },
                         child: Text("Usuń"),
                       ),
@@ -194,19 +233,27 @@ class _HomeScreenState extends State<HomeScreen> {
                             key: ValueKey(task.title),
                             direction: DismissDirection.endToStart,
                             onDismissed: (direction) async {
-                              setState(() {
-                                _tasks.remove(task);
-                              });
-                              await TaskLocalDatabase.deleteTask(task.id);
-                              if (!context.mounted) return;
+                              try {
+                                setState(() {
+                                  _tasks.remove(task);
+                                });
+                                await TaskLocalDatabase.deleteTask(task.id);
+                                if (!context.mounted) return;
 
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    'Zadanie "${task.title}" usunięte',
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      'Zadanie "${task.title}" usunięte',
+                                    ),
                                   ),
-                                ),
-                              );
+                                );
+                              } catch (error, stackTrace) {
+                                await _recordCrash(
+                                  error,
+                                  stackTrace,
+                                  reason: 'Failed to delete task',
+                                );
+                              }
                             },
                             child: TaskCard(
                               title: task.title,
@@ -215,29 +262,55 @@ class _HomeScreenState extends State<HomeScreen> {
                               done: task.done,
                               onChanged: (value) async {
                                 if (value == null) return;
-                                setState(() {
-                                  task.done = value;
-                                });
-                                await TaskLocalDatabase.updateTask(task);
+                                try {
+                                  setState(() {
+                                    task.done = value;
+                                  });
+                                  await TaskLocalDatabase.updateTask(task);
+                                  if (value) {
+                                    await AnalyticsService.logTaskCompleted(
+                                      task.id,
+                                    );
+                                  }
+                                } catch (error, stackTrace) {
+                                  await _recordCrash(
+                                    error,
+                                    stackTrace,
+                                    reason: 'Failed to update task status',
+                                  );
+                                }
                               },
                               onTap: () async {
-                                final Task? updatedTask = await Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) =>
-                                        EditTaskScreen(task: task),
-                                  ),
-                                );
+                                try {
+                                  await AnalyticsService.logTaskOpened(task.id);
+                                  if (!context.mounted) return;
+                                  final Task? updatedTask =
+                                      await Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) =>
+                                              EditTaskScreen(task: task),
+                                        ),
+                                      );
 
-                                if (updatedTask == null || !context.mounted) {
-                                  return;
+                                  if (updatedTask == null || !context.mounted) {
+                                    return;
+                                  }
+                                  await TaskLocalDatabase.updateTask(
+                                    updatedTask,
+                                  );
+                                  if (!mounted) return;
+                                  setState(() {
+                                    final taskIndex = _tasks.indexOf(task);
+                                    _tasks[taskIndex] = updatedTask;
+                                  });
+                                } catch (error, stackTrace) {
+                                  await _recordCrash(
+                                    error,
+                                    stackTrace,
+                                    reason: 'Failed to open or update task',
+                                  );
                                 }
-                                await TaskLocalDatabase.updateTask(updatedTask);
-                                if (!mounted) return;
-                                setState(() {
-                                  final taskIndex = _tasks.indexOf(task);
-                                  _tasks[taskIndex] = updatedTask;
-                                });
                               },
                             ),
                           );
@@ -264,11 +337,16 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           );
           if (newTask == null || !mounted) return;
-          await TaskLocalDatabase.addTask(newTask);
-          if (!mounted) return;
-          setState(() {
-            _tasks.add(newTask);
-          });
+          try {
+            await TaskLocalDatabase.addTask(newTask);
+            await AnalyticsService.logTaskAdded();
+            if (!mounted) return;
+            setState(() {
+              _tasks.add(newTask);
+            });
+          } catch (error, stackTrace) {
+            await _recordCrash(error, stackTrace, reason: 'Failed to add task');
+          }
         },
         child: Icon(Icons.add),
       ),
