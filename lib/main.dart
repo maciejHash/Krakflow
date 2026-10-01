@@ -16,6 +16,8 @@ import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 
 import 'services/analytics_service.dart';
 
+import 'services/notification_service.dart';
+
 Future<void> _recordCrash(
   Object error,
   StackTrace stackTrace, {
@@ -35,6 +37,8 @@ void main() async {
   await Hive.openBox("tasks"); // otwarcie kontenera
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  await NotificationService.init();
 
   FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
   PlatformDispatcher.instance.onError = (error, stackTrace) {
@@ -262,11 +266,23 @@ class _HomeScreenState extends State<HomeScreen> {
                               done: task.done,
                               onChanged: (value) async {
                                 if (value == null) return;
+
+                                final shouldNotify =
+                                    NotificationService.shouldShowTaskDoneNotification(
+                                      previousValue: task.done,
+                                      newValue: value,
+                                    );
+
                                 try {
                                   setState(() {
                                     task.done = value;
                                   });
                                   await TaskLocalDatabase.updateTask(task);
+                                  if (shouldNotify) {
+                                    await NotificationService.showTaskDoneNotification(
+                                      task.title,
+                                    );
+                                  }
                                   if (value) {
                                     await AnalyticsService.logTaskCompleted(
                                       task.id,
